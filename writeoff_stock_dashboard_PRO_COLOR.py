@@ -121,7 +121,7 @@ st.markdown(
     .big-table tbody tr:hover {background: #F3F0FF;}
     .big-table td.num {
         text-align: right;
-        font-size: 16px !important;
+        font-size: 24px !important;
         font-weight: 950 !important;
         color: #4C1D95 !important;
         font-variant-numeric: tabular-nums;
@@ -260,12 +260,10 @@ def style_figure(fig, title, height=430):
     return fig
 
 
-@st.cache_data
-def load_data_from_path(path, modified_time):
-    return pd.read_excel(path)
-
-modified_time = os.path.getmtime(DEFAULT_FILE)
-df = load_data_from_path(DEFAULT_FILE, modified_time)
+@st.cache_data(show_spinner=False)
+def load_data(source):
+    df = pd.read_excel(source, sheet_name="Sheet1", engine="openpyxl")
+    df.columns = [str(c).strip() for c in df.columns]
 
     required = [
         "Name", "Description", "Location On Hand", "Inventory Location",
