@@ -260,19 +260,37 @@ def style_figure(fig, title, height=430):
     return fig
 
 
-@st.cache_data(show_spinner=False)
+def _parse_excel_date_series(series):
+    """Parse normal Excel dates, text dates, and Excel serial numbers safely."""
+    parsed = pd.to_datetime(series, errors="coerce", dayfirst=False)
+
+    # Handle Excel serial date values if any cells are stored as numbers.
+    numeric = pd.to_numeric(series, errors="coerce")
+    serial_mask = parsed.isna() & numeric.notna() & numeric.between(20000, 80000)
+    if serial_mask.any():
+        parsed.loc[serial_mask] = pd.to_datetime(
+            numeric.loc[serial_mask], unit="D", origin="1899-12-30", errors="coerce"
+        )
+    return parsed
+
+
 def load_data(source):
+    # Intentionally not cached: when the Excel file in GitHub is replaced,
+    # Streamlit always reads the latest workbook instead of a stale cached copy.
     df = pd.read_excel(source, sheet_name="Sheet1", engine="openpyxl")
     df.columns = [str(c).strip() for c in df.columns]
 
     required = [
         "Name", "Description", "Location On Hand", "Inventory Location",
         "Work Order Group", "Work Order Sub-Group", "Location Average Cost",
-        "Location Total Value", "Decision", "Remark", "Column1"
+        "Location Total Value", "Decision", "Remark"
     ]
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError("Missing required columns: " + ", ".join(missing))
+
+    if "Date transfer" not in df.columns and "Column1" not in df.columns:
+        raise ValueError("Missing date column: expected 'Date transfer' or 'Column1'.")
 
     # Normalize text
     for c in ["Name", "Description", "Inventory Location", "Work Order Group", "Work Order Sub-Group", "Decision", "Remark", "Memo"]:
@@ -284,8 +302,16 @@ def load_data(source):
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
 
-    # Use Column1 because it is the parsed date from Memo in the source workbook.
-    df["Transfer Date"] = pd.to_datetime(df["Column1"], errors="coerce")
+    # IMPORTANT: use the real Date transfer column first.
+    # Column1 is only a fallback for older workbook versions.
+    transfer_date = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
+    if "Date transfer" in df.columns:
+        transfer_date = _parse_excel_date_series(df["Date transfer"])
+    if "Column1" in df.columns:
+        fallback_date = _parse_excel_date_series(df["Column1"])
+        transfer_date = transfer_date.fillna(fallback_date)
+
+    df["Transfer Date"] = transfer_date
     today = pd.Timestamp.now().normalize()
     df["Aging Day"] = (today - df["Transfer Date"].dt.normalize()).dt.days.clip(lower=0)
     df["Aging Bucket"] = df["Aging Day"].apply(aging_bucket)
@@ -314,6 +340,9 @@ try:
 except Exception as e:
     st.error(f"Cannot read Excel file: {e}")
     st.stop()
+
+raw_total_value = df["Location Total Value"].sum()
+missing_transfer_dates = int(df["Transfer Date"].isna().sum())
 
 # ------------------------------------------------------------
 # FILTERS
@@ -349,7 +378,13 @@ sort_metric = st.sidebar.selectbox("Top Item By", ["Location Total Value", "Loca
 f = df.copy()
 if date_range and isinstance(date_range, (tuple, list)) and len(date_range) == 2:
     start_date, end_date = date_range
-    f = f[(f["Transfer Date"].dt.date >= start_date) & (f["Transfer Date"].dt.date <= end_date)]
+    valid_date_mask = (
+        (f["Transfer Date"].dt.date >= start_date)
+        & (f["Transfer Date"].dt.date <= end_date)
+    )
+    # Keep rows whose transfer date cannot be parsed, so stock value is never
+    # silently dropped from the dashboard total.
+    f = f[valid_date_mask | f["Transfer Date"].isna()]
 if selected_items:
     f = f[f["Name"].isin(selected_items)]
 if selected_decisions:
@@ -580,4 +615,8 @@ st.download_button(
     use_container_width=False,
 )
 
+st.caption(
+    f"Source check: {len(df):,} rows loaded • Raw stock value: {raw_total_value:,.0f} VND • "
+    f"Rows without parsed Transfer Date: {missing_transfer_dates:,}"
+)
 st.caption("All figures are calculated from the selected filters. Aging Day is recalculated dynamically from Transfer Date to today.")
