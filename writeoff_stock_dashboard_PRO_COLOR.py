@@ -260,10 +260,12 @@ def style_figure(fig, title, height=430):
     return fig
 
 
-@st.cache_data(show_spinner=False)
-def load_data(source):
-    df = pd.read_excel(source, sheet_name="Sheet1", engine="openpyxl")
-    df.columns = [str(c).strip() for c in df.columns]
+@st.cache_data
+def load_data_from_path(path, modified_time):
+    return pd.read_excel(path)
+
+modified_time = os.path.getmtime(DEFAULT_FILE)
+df = load_data_from_path(DEFAULT_FILE, modified_time)
 
     required = [
         "Name", "Description", "Location On Hand", "Inventory Location",
